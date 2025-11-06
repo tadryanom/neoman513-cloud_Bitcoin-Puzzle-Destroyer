@@ -37,6 +37,4 @@ in case if this was useful to you, can you please donate BTC:
 
 so i will be more motivated to develop further this project
 
-contact telegram: https://t.me/biernus
-
 author: https://t.me/biernus
