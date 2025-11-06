@@ -24,12 +24,12 @@ just in case if you will edit this code further, you can compile it with the com
 
 `nvcc -o main main.cu`
 
-also in secp256k1.cuh there are few parameters at top of the file:
-`#define BIGINT_WORDS 8` - this one should stay as it is, cause 8 is required for 64 hex
-`#define WINDOW_SIZE 14` - this higher it is the more memory is required and the more loading time it will be before the start
-`#define NUM_BASE_POINTS 64` - its better not to change this, tough the less it is the less bits it can process for the correct hash160
-`#define BATCH_SIZE 64` - this one defined how deep the algorithm will search, if random defines X and Y coordinates, then this defines how deep it will go through Z coordinate
-`#define MOD_EXP 5` - this one affects the most heavy function, that is exponential calculation, the higher the faster it should be, but requires more memory, usually its 4,5,6\
+also in secp256k1.cuh there are few parameters at top of the file:\
+`#define BIGINT_WORDS 8` - this one should stay as it is, cause 8 is required for 64 hex\
+`#define WINDOW_SIZE 14` - this higher it is the more memory is required and the more loading time it will be before the start\
+`#define NUM_BASE_POINTS 64` - its better not to change this, tough the less it is the less bits it can process for the correct hash160\
+`#define BATCH_SIZE 64` - this one defined how deep the algorithm will search, if random defines X and Y coordinates, then this defines how deep it will go through Z coordinate\
+`#define MOD_EXP 5` - this one affects the most heavy function, that is exponential calculation, the higher the faster it should be, but requires more memory, usually its 4,5,6
 
 in case if this was useful to you, can you please donate BTC:
 
