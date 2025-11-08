@@ -228,9 +228,6 @@ __global__ void start(const uint8_t* target, uint64_t p1, uint64_t p2, uint64_t 
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     
-    // Shared memory exit flag
-    __shared__ bool should_exit;
-    
     // Initialize RNG once
     curandStatePhilox4_32_10_t state;
     curand_init(p1, p2 + tid, p3, &state);
@@ -243,23 +240,12 @@ __global__ void start(const uint8_t* target, uint64_t p1, uint64_t p2, uint64_t 
     // Main loop
     for (int iter = 0; iter < ITERATIONS_PER_KERNEL; ++iter) {
         
-        // Check exit condition
-        if (threadIdx.x == 0) {
-            should_exit = (g_found != 0);
-        }
-        __syncthreads();
-        
-        if (should_exit) return;
-        
         // Generate batch of private keys in range [min, max]
         #pragma unroll
         for (int i = 0; i < BATCH_SIZE; ++i) {
             generate_random_in_range(&priv_batch[i], &state, &d_min_bigint, &d_max_bigint);
             scalar_multiply_multi_base_jac(&result_jac_batch[i], &priv_batch[i]);
         }
-        
-        // Batch convert to hash160
-        jacobian_batch_to_hash160(result_jac_batch, hash160_batch);
         
         // Check results
         #pragma unroll
@@ -311,12 +297,10 @@ bool run_with_quantum_data(const char* min, const char* max, const char* target,
     uint64_t total_keys_checked = 0;
     auto start_time = std::chrono::high_resolution_clock::now();
     auto last_print_time = start_time;
-    int iteration = 0;
-    
+	BCryptGenRandom(NULL, (PUCHAR)&p1, sizeof(p1), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+	BCryptGenRandom(NULL, (PUCHAR)&p2, sizeof(p2), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+	BCryptGenRandom(NULL, (PUCHAR)&p3, sizeof(p3), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
     while(true) {
-		BCryptGenRandom(NULL, (PUCHAR)&p1, sizeof(p1), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
-		BCryptGenRandom(NULL, (PUCHAR)&p2, sizeof(p2), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
-		BCryptGenRandom(NULL, (PUCHAR)&p3, sizeof(p3), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
         auto kernel_start = std::chrono::high_resolution_clock::now();
         
         // Launch kernel
@@ -330,22 +314,16 @@ bool run_with_quantum_data(const char* min, const char* max, const char* target,
         
         // Update counters
         total_keys_checked += keys_per_kernel;
-        iteration++;
         
         // Print performance stats every second
         auto current_time = std::chrono::high_resolution_clock::now();
         double elapsed_since_print = std::chrono::duration<double>(current_time - last_print_time).count();
         
-        if (elapsed_since_print >= 1.0 || iteration % 10 == 0) {
-            double total_elapsed = std::chrono::duration<double>(current_time - start_time).count();
+        if (elapsed_since_print >= 1.0) {
             double current_kps = keys_per_kernel / kernel_time;
-            double average_kps = total_keys_checked / total_elapsed;
             
-            printf("\r[Iter %d] Kernel: %.3f ms | Current: %.2f MK/s | Average: %.2f MK/s | Total: %.2f B keys",
-                   iteration,
-                   kernel_time * 1000.0,
+            printf("\rSpeed: %.2f MK/s | Total: %.2f B keys",
                    current_kps / 1000000.0,
-                   average_kps / 1000000.0,
                    total_keys_checked / 1000000000.0);
             fflush(stdout);
             
@@ -391,25 +369,34 @@ bool run_with_quantum_data(const char* min, const char* max, const char* target,
             cudaFree(d_target);
             return true;
         }
-        
-        // Update seed for next iteration
-        //p1 += 1;
+        p3 += 1;
     }
 }
 
 int main(int argc, char* argv[]) {
     if (argc < 4) {
-        std::cerr << "Usage: " << argv[0] << " <min> <max> <target> [blocks] [threads] [device_id]" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " <min> <max> <target> [device_id]" << std::endl;
+        return 1;
+    }
+    int blocks = 4096;
+    int threads = 256;
+    int device_id = (argc > 4) ? std::stoi(argv[4]) : 0;
+    
+    // Set GPU device
+    cudaSetDevice(device_id);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "Error setting device " << device_id << ": " << cudaGetErrorString(err) << std::endl;
         return 1;
     }
     
-    int blocks = (argc >= 5) ? std::stoi(argv[4]) : 4096;
-    int threads = (argc >= 6) ? std::stoi(argv[5]) : 256;
-    int device_id = (argc >= 7) ? std::stoi(argv[6]) : 0;
-    
+    // Validate input lengths match
+    if (strlen(argv[1]) != strlen(argv[2])) {
+        std::cerr << "Error: min and max must have the same length" << std::endl;
+        return 1;
+    }
     init_gpu_constants();
     cudaDeviceSynchronize();
-    
     bool result = run_with_quantum_data(argv[1], argv[2], argv[3], blocks, threads, device_id);
     
     return 0;

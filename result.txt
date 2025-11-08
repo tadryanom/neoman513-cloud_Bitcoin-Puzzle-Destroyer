@@ -406,3 +406,158 @@ Total keys checked: 4026531840
 Time taken: 62.3256 seconds
 Average speed: 64.6048 MK/s
 
+[2025-11-06 23:20:58] Found: 1fa5ee5 -> 2f396b29b27324300d0c59b17c3abc1835bd3dbb
+Total keys checked: 4697620480
+Time taken: 74.2231 seconds
+Average speed: 63.2905 MK/s
+
+[2025-11-06 23:52:57] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 671088640
+Time taken: 1.68404 seconds
+Average speed: 398.5 MK/s
+
+[2025-11-07 00:09:15] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 4026531840
+Time taken: 69.5323 seconds
+Average speed: 57.9088 MK/s
+
+[2025-11-07 00:20:03] Found: 34a65911d -> f6d67d7983bf70450f295c9cb828daab265f1bfa
+Total keys checked: 3355443200
+Time taken: 47.4357 seconds
+Average speed: 70.7366 MK/s
+
+[2025-11-07 00:31:52] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 3355443200
+Time taken: 61.2222 seconds
+Average speed: 54.8077 MK/s
+
+[2025-11-07 00:40:54] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 1342177280
+Time taken: 19.3072 seconds
+Average speed: 69.5168 MK/s
+
+[2025-11-08 14:43:21] Found: 17e2551e -> 5a416cc9148f4a377b672c8ae5d3287adaafadec
+Total keys checked: 16777216
+Time taken: 6.52604 seconds
+Average speed: 2.57081 MK/s
+
+[2025-11-08 14:53:41] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 234881024
+Time taken: 91.2722 seconds
+Average speed: 2.57341 MK/s
+
+[2025-11-08 15:02:21] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 16777216
+Time taken: 6.65442 seconds
+Average speed: 2.52121 MK/s
+
+[2025-11-08 15:10:51] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 167772160
+Time taken: 66.1123 seconds
+Average speed: 2.53768 MK/s
+
+[2025-11-08 16:00:06] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 201326592
+Time taken: 71.5778 seconds
+Average speed: 2.8127 MK/s
+
+[2025-11-08 16:21:42] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 301989888
+Time taken: 23.2278 seconds
+Average speed: 13.0012 MK/s
+
+[2025-11-08 16:32:15] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 316669952
+Time taken: 28.8804 seconds
+Average speed: 10.9649 MK/s
+
+[2025-11-08 16:53:19] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 1900544
+Time taken: 40.2562 seconds
+Average speed: 0.0472112 MK/s
+
+[2025-11-08 17:22:23] Found: 17e2551e -> 5a416cc9148f4a377b672c8ae5d3287adaafadec
+Total keys checked: 1048576
+Time taken: 16.5879 seconds
+Average speed: 0.0632133 MK/s
+
+[2025-11-08 17:35:31] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 16252928
+Time taken: 264.809 seconds
+Average speed: 0.061376 MK/s
+
+[2025-11-08 19:49:57] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 524288
+Time taken: 8.46736 seconds
+Average speed: 0.0619187 MK/s
+
+[2025-11-09 00:30:45] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 6710886400
+Time taken: 103.497 seconds
+Average speed: 64.8412 MK/s
+
+[2025-11-09 00:32:04] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 3355443200
+Time taken: 49.0461 seconds
+Average speed: 68.414 MK/s
+
+[2025-11-09 00:37:13] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 2013265920
+Time taken: 27.6197 seconds
+Average speed: 72.8923 MK/s
+
+[2025-11-09 00:44:05] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 671088640
+Time taken: 8.05287 seconds
+Average speed: 83.3354 MK/s
+
+[2025-11-09 00:47:30] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 671088640
+Time taken: 2.55645 seconds
+Average speed: 262.508 MK/s
+
+[2025-11-09 00:51:45] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 671088640
+Time taken: 2.35415 seconds
+Average speed: 285.066 MK/s
+
+[2025-11-09 00:53:20] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 1342177280
+Time taken: 18.7397 seconds
+Average speed: 71.6222 MK/s
+
+[2025-11-09 00:53:54] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 1342177280
+Time taken: 12.6397 seconds
+Average speed: 106.187 MK/s
+
+[2025-11-09 00:54:35] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 1342177280
+Time taken: 19.5033 seconds
+Average speed: 68.8181 MK/s
+
+[2025-11-09 00:57:43] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 5368709120
+Time taken: 68.1432 seconds
+Average speed: 78.7857 MK/s
+
+[2025-11-09 01:03:34] Found:  -> Õ3ü
+Total keys checked: 671088640
+Time taken: 0.0248155 seconds
+Average speed: 27043.1 MK/s
+
+[2025-11-09 01:14:26] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 3355443200
+Time taken: 55.3934 seconds
+Average speed: 60.5748 MK/s
+
+[2025-11-09 01:23:33] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 2013265920
+Time taken: 30.5464 seconds
+Average speed: 65.9085 MK/s
+
+[2025-11-09 01:27:00] Found: 1a96ca8d8 -> 4e15e5189752d1eaf444dfd6bff399feb0443977
+Total keys checked: 2013265920
+Time taken: 26.3905 seconds
+Average speed: 76.2876 MK/s
+
