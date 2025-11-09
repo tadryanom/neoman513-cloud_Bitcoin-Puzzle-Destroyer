@@ -24,9 +24,6 @@ struct ECPointJac {
     BigInt X, Y, Z;
     bool infinity;
 };
-// Add this to your constant memory declarations at the top
-// Precompute p * 2 for faster subtraction checks
-__constant__ BigInt const_p_times_2;
 __constant__ BigInt const_p_minus_2;
 __constant__ BigInt const_p;
 __constant__ ECPointJac const_G_jacobian;
@@ -282,17 +279,20 @@ __device__ __forceinline__ void add_9word_with_carry(uint32_t r[9], const uint32
     }
     r[8] = carry; // Store final carry (will be 0 or 1)
 }
-// OPTIMIZED mul_mod_device with single-pass reduction check
+
 __device__ __forceinline__ void mul_mod_device(BigInt *res, const BigInt *a, const BigInt *b) {
     // Full 256x256 -> 512-bit multiplication
+    // Store as 32-bit words for compatibility
     uint32_t product[16] = {0};
     
+    // Standard schoolbook multiplication with PTX optimization
     #pragma unroll
     for (int i = 0; i < BIGINT_WORDS; i++) {
         uint64_t carry = 0;
         
         #pragma unroll
         for (int j = 0; j < BIGINT_WORDS; j++) {
+            // product[i+j] += a[i] * b[j] + carry
             uint64_t mul = (uint64_t)a->data[i] * (uint64_t)b->data[j];
             uint64_t sum = (uint64_t)product[i + j] + mul + carry;
             
@@ -304,18 +304,23 @@ __device__ __forceinline__ void mul_mod_device(BigInt *res, const BigInt *a, con
     }
     
     // Fast reduction for secp256k1: p = 2^256 - 2^32 - 977
-    uint32_t result[9] = {0};
+    // We have: product = low (product[0..7]) + high (product[8..15]) * 2^256
+    // Since 2^256 ≡ 2^32 + 977 (mod p)
+    // Result ≡ low + high * (2^32 + 977) (mod p)
     
-    // Initialize with low part
+    // result = product[0..7] (low part)
+    uint32_t result[9] = {0};  // Extra word for overflow
     #pragma unroll
     for (int i = 0; i < BIGINT_WORDS; i++) {
         result[i] = product[i];
     }
     
-    // Add high * 977
+    // Add: high * 977
+    // For each word in high part, multiply by 977 and add to result
     uint64_t c = 0;
     #pragma unroll
     for (int i = 0; i < BIGINT_WORDS; i++) {
+        // Multiply product[8+i] by 977
         uint32_t lo977, hi977;
         asm volatile(
             "mul.lo.u32 %0, %2, 977;\n\t"
@@ -324,13 +329,16 @@ __device__ __forceinline__ void mul_mod_device(BigInt *res, const BigInt *a, con
             : "r"(product[8 + i])
         );
         
+        // Add to result[i] with carry chain
         uint64_t sum = (uint64_t)result[i] + (uint64_t)lo977 + c;
         result[i] = (uint32_t)sum;
         c = (sum >> 32) + hi977;
     }
+    
+    // Propagate any remaining carry
     result[8] = (uint32_t)c;
     
-    // Add high * 2^32
+    // Add: high * 2^32 (shift high by 32 bits = shift by 1 word position)
     c = 0;
     #pragma unroll
     for (int i = 0; i < BIGINT_WORDS; i++) {
@@ -339,10 +347,13 @@ __device__ __forceinline__ void mul_mod_device(BigInt *res, const BigInt *a, con
         c = sum >> 32;
     }
     
-    // Handle overflow
-    if (__builtin_expect(result[8] != 0, 0)) {
+    // Handle the 9th word overflow if any
+    if (result[8] != 0) {
         uint32_t overflow = result[8];
         
+        // overflow * 2^256 ≡ overflow * (2^32 + 977) (mod p)
+        
+        // Add overflow * 977
         uint32_t lo977, hi977;
         asm volatile(
             "mul.lo.u32 %0, %2, 977;\n\t"
@@ -351,20 +362,24 @@ __device__ __forceinline__ void mul_mod_device(BigInt *res, const BigInt *a, con
             : "r"(overflow)
         );
         
+        c = 0;
         uint64_t sum = (uint64_t)result[0] + (uint64_t)lo977;
         result[0] = (uint32_t)sum;
         c = (sum >> 32) + hi977;
         
+        // Propagate carry from position 1 onwards
         for (int i = 1; i < BIGINT_WORDS && c != 0; i++) {
             sum = (uint64_t)result[i] + c;
             result[i] = (uint32_t)sum;
             c = sum >> 32;
         }
         
+        // Add overflow * 2^32 to result[1]
         sum = (uint64_t)result[1] + (uint64_t)overflow;
         result[1] = (uint32_t)sum;
         c = sum >> 32;
         
+        // Propagate carry
         for (int i = 2; i < BIGINT_WORDS && c != 0; i++) {
             sum = (uint64_t)result[i] + c;
             result[i] = (uint32_t)sum;
@@ -372,19 +387,20 @@ __device__ __forceinline__ void mul_mod_device(BigInt *res, const BigInt *a, con
         }
     }
     
-    // Copy to output
+    // Copy result to output
     #pragma unroll
     for (int i = 0; i < BIGINT_WORDS; i++) {
         res->data[i] = result[i];
     }
     
-    // OPTIMIZED: Single reduction check using precomputed p*2
-    // If res >= 2p, subtract 2p (rare)
-    // Otherwise if res >= p, subtract p
-    if (__builtin_expect(compare_bigint(res, &const_p_times_2) >= 0, 0)) {
-        ptx_u256Sub(res, res, &const_p_times_2);
-    } else if (compare_bigint(res, &const_p) >= 0) {
+    // Final conditional reduction (at most 2 iterations needed)
+    if (compare_bigint(res, &const_p) >= 0) {
         ptx_u256Sub(res, res, &const_p);
+        
+        // Second reduction rarely needed, but possible
+        if (__builtin_expect(compare_bigint(res, &const_p) >= 0, 0)) {
+            ptx_u256Sub(res, res, &const_p);
+        }
     }
 }
 
@@ -1271,26 +1287,6 @@ void print_gpu_info() {
     }
 }
 
-// Add this to init_gpu_constants() function after setting const_p
-void init_mul_mod_constants() {
-    // Precompute p * 2 for elimination of second reduction check
-    BigInt p_times_2_host;
-    const BigInt p_host = {
-        { 0xFFFFFC2F, 0xFFFFFFFE, 0xFFFFFFFF, 0xFFFFFFFF,
-          0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF }
-    };
-    
-    // p * 2 = p + p
-    uint64_t carry = 0;
-    for (int i = 0; i < 8; i++) {
-        uint64_t sum = (uint64_t)p_host.data[i] + (uint64_t)p_host.data[i] + carry;
-        p_times_2_host.data[i] = (uint32_t)sum;
-        carry = sum >> 32;
-    }
-    
-    cudaMemcpyToSymbol(const_p_times_2, &p_times_2_host, sizeof(BigInt));
-}
-
 
 // IMPROVED: Safer initialization with error checking
 void init_gpu_constants() {
@@ -1341,16 +1337,6 @@ void init_gpu_constants() {
         return;
     }
     printf("Multi-base tables complete.\n");
-	
-   // Initialize mul_mod optimization
-    BigInt p_times_2_host;
-    uint64_t carry = 0;
-    for (int i = 0; i < 8; i++) {
-        uint64_t sum = (uint64_t)p_host.data[i] + (uint64_t)p_host.data[i] + carry;
-        p_times_2_host.data[i] = (uint32_t)sum;
-        carry = sum >> 32;
-    }
-    cudaMemcpyToSymbol(const_p_times_2, &p_times_2_host, sizeof(BigInt));
     
     // Verify initialization with a test computation
     printf("Precomputation complete and verified.\n");
