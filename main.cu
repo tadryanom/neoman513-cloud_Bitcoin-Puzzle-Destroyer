@@ -1,4 +1,5 @@
 // author: https://t.me/biernus
+// Modified: Configurable step size with wrap-around from max to min
 #include "secp256k1.cuh"
 #include <iostream>
 #include <vector>
@@ -27,14 +28,13 @@ __device__ __host__ __forceinline__ uint8_t hex_char_to_byte(char c) {
 }
 
 // Convert hex string to bytes
-__device__ __host__ __device__ void hex_string_to_bytes(const char* hex_str, uint8_t* bytes, int num_bytes) {
+__device__ __host__ void hex_string_to_bytes(const char* hex_str, uint8_t* bytes, int num_bytes) {
     #pragma unroll 8
     for (int i = 0; i < num_bytes; i++) {
         bytes[i] = (hex_char_to_byte(hex_str[i * 2]) << 4) | 
                    hex_char_to_byte(hex_str[i * 2 + 1]);
     }
 }
-
 
 // Convert hex string to BigInt - optimized
 __device__ __host__ void hex_to_bigint(const char* hex_str, BigInt* bigint) {
@@ -105,7 +105,6 @@ __device__ void hash160_to_hex(uint8_t* hash, char* hex_str) {
     hex_str[40] = '\0';
 }
 
-
 __device__ __forceinline__ bool compare_hash160_fast(const uint8_t* hash1, const uint8_t* hash2) {
     uint64_t a1, a2, b1, b2;
     uint32_t c1, c2;
@@ -130,135 +129,145 @@ __device__ void hash160_to_hex(const uint8_t *hash, char *out_hex) {
     out_hex[40] = '\0';
 }
 
-// Device function to generate random BigInt in range [min, max]
-__device__ void generate_random_in_range(BigInt* result, curandStatePhilox4_32_10_t* state, 
-                                         const BigInt* min_val, const BigInt* max_val) {
-    // Calculate range = max - min
-    BigInt range;
-    bool borrow = false;
-    
-    #pragma unroll
-    for (int i = 0; i < BIGINT_WORDS; ++i) {
-        uint64_t diff = (uint64_t)max_val->data[i] - (uint64_t)min_val->data[i] - (borrow ? 1 : 0);
-        range.data[i] = (uint32_t)diff;
-        borrow = (diff > 0xFFFFFFFFULL);
-    }
-    
-    // Generate random value in [0, range]
-    BigInt random;
-    for (int w = 0; w < BIGINT_WORDS; w += 4) {
-        uint4 r = curand4(state);
-        if (w + 0 < BIGINT_WORDS) random.data[w + 0] = r.x;
-        if (w + 1 < BIGINT_WORDS) random.data[w + 1] = r.y;
-        if (w + 2 < BIGINT_WORDS) random.data[w + 2] = r.z;
-        if (w + 3 < BIGINT_WORDS) random.data[w + 3] = r.w;
-    }
-    
-    // Reduce random to range using modulo-like operation
-    // Simple approach: if random > range, regenerate or use rejection sampling
-    // For efficiency, we'll use: random = random % (range + 1)
-    // But since we don't have full bigint modulo, we'll use a simpler approach:
-    // Keep only the significant bits based on range's highest bit
-    
-    // Find highest set bit in range
-    int highest_word = BIGINT_WORDS - 1;
-    while (highest_word >= 0 && range.data[highest_word] == 0) {
-        highest_word--;
-    }
-    
-    if (highest_word >= 0) {
-        // Mask off bits beyond the range
-        uint32_t mask = range.data[highest_word];
-        mask |= mask >> 1;
-        mask |= mask >> 2;
-        mask |= mask >> 4;
-        mask |= mask >> 8;
-        mask |= mask >> 16;
-        
-        random.data[highest_word] &= mask;
-        
-        // Zero out higher words
-        for (int i = highest_word + 1; i < BIGINT_WORDS; ++i) {
-            random.data[i] = 0;
-        }
-        
-        // Check if random <= range, if not, reduce it
-        bool greater = false;
-        for (int i = BIGINT_WORDS - 1; i >= 0; --i) {
-            if (random.data[i] > range.data[i]) {
-                greater = true;
-                break;
-            } else if (random.data[i] < range.data[i]) {
-                break;
-            }
-        }
-        
-        if (greater) {
-            // Simple reduction: random = random & (mask >> 1)
-            for (int i = 0; i < BIGINT_WORDS; ++i) {
-                random.data[i] = random.data[i] % (range.data[i] + 1);
-            }
-        }
-    }
-    
-    // Add min: result = random + min
-    bool carry = false;
-    #pragma unroll
-    for (int i = 0; i < BIGINT_WORDS; ++i) {
-        uint64_t sum = (uint64_t)random.data[i] + (uint64_t)min_val->data[i] + (carry ? 1 : 0);
-        result->data[i] = (uint32_t)sum;
-        carry = (sum > 0xFFFFFFFFULL);
-    }
-}
-
 // Global device constants for min/max as BigInt
 __constant__ BigInt d_min_bigint;
 __constant__ BigInt d_max_bigint;
+__constant__ BigInt d_step_size;
+__constant__ BigInt d_range_size; // NEW: For wrap-around calculation
 
 __device__ volatile int g_found = 0;
 __device__ char g_found_hex[65] = {0};
 __device__ char g_found_hash160[41] = {0};
 
-__device__ char d_min_hex[65];
-__device__ char d_max_hex[65];
-__device__ int d_hex_length;
-__global__ void start(const uint8_t* target, uint64_t p1, uint64_t p2, uint64_t p3, int total_threads)
+// Per-thread persistent state (stored in global memory)
+__device__ BigInt* d_thread_keys;
+
+// Helper function to add with wrap-around
+__device__ void add_with_wraparound(BigInt* result, const BigInt* a, const BigInt* b) {
+    // result = a + b
+    ptx_u256Add(result, a, b);
+    
+    // If result > max, wrap: result = min + (result - max - 1)
+    if (compare_bigint(result, &d_max_bigint) > 0) {
+        // Calculate overflow: result - max - 1
+        BigInt overflow;
+        ptx_u256Sub(&overflow, result, &d_max_bigint);
+        
+        // Subtract 1 from overflow
+        BigInt one;
+        init_bigint(&one, 1);
+        ptx_u256Sub(&overflow, &overflow, &one);
+        
+        // Wrap: result = min + overflow
+        ptx_u256Add(result, &d_min_bigint, &overflow);
+    }
+}
+
+__global__ void start(const uint8_t* target, uint64_t iteration)
 {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     
-    // Initialize RNG once
-    curandStatePhilox4_32_10_t state;
-    curand_init(p1, p2 + tid, p3, &state);
+    // Load this thread's current private key from global memory
+    BigInt priv_base = d_thread_keys[tid];
     
-    // Batch storage
+    // Early exit: Check if already found by another thread
+    if (g_found) return;
+    
+    // Array to hold batch of points
     ECPointJac result_jac_batch[BATCH_SIZE];
-    BigInt priv_batch[BATCH_SIZE];
     uint8_t hash160_batch[BATCH_SIZE][20];
     
-	// Generate batch of private keys in range [min, max]
-	#pragma unroll
-	for (int i = 0; i < BATCH_SIZE; ++i) {
-		generate_random_in_range(&priv_batch[i], &state, &d_min_bigint, &d_max_bigint);
-		scalar_multiply_multi_base_jac(&result_jac_batch[i], &priv_batch[i]);
-	}
-	
-	// Batch convert to hash160
-	jacobian_batch_to_hash160(result_jac_batch, hash160_batch);
-	
-	// Check results
-	#pragma unroll
-	for (int i = 0; i < BATCH_SIZE; ++i) {
-		if (compare_hash160_fast(hash160_batch[i], target)) {
-			if (atomicCAS((int*)&g_found, 0, 1) == 0) {
-				bigint_to_hex(&priv_batch[i], g_found_hex);
-				hash160_to_hex(hash160_batch[i], g_found_hash160);
-			}
-			return;
-		}
-	}
+    // --- Compute base point: P = priv_base * G ---
+    scalar_multiply_multi_base_jac(&result_jac_batch[0], &priv_base);
+    
+    // --- Generate sequential points with step_size: P+step, P+2*step, P+3*step, ... ---
+    BigInt current_key = priv_base;
+    #pragma unroll
+    for (int i = 1; i < BATCH_SIZE; ++i) {
+        // current_key = current_key + step_size (with wrap-around)
+        BigInt next_key;
+        add_with_wraparound(&next_key, &current_key, &d_step_size);
+        
+        // Reduce modulo n if needed
+        if (compare_bigint(&next_key, &const_n) >= 0) {
+            ptx_u256Sub(&next_key, &next_key, &const_n);
+        }
+        
+        current_key = next_key;
+        
+        // Compute point for this key
+        scalar_multiply_multi_base_jac(&result_jac_batch[i], &current_key);
+    }
+    
+    // --- Convert the entire batch to hash160s with ONE inverse ---
+    jacobian_batch_to_hash160(result_jac_batch, hash160_batch);
+    
+    // Debug print for first thread only (every 1000 iterations)
+    if (tid == 0 && iteration % 1000 == 0) {
+        char hash160_str[41];
+        char hex_key[65];
+        bigint_to_hex(&priv_base, hex_key);
+        hash160_to_hex(hash160_batch[0], hash160_str);
+        printf("Thread %d walking - Key: %s -> %s\n", tid, hex_key, hash160_str);
+    }
+    
+    // --- Optimized batch checking with early exit ---
+    BigInt key_for_check = priv_base;
+    #pragma unroll
+    for (int i = 0; i < BATCH_SIZE; ++i) {
+        // Check if another thread already found it
+        if (g_found) return;
+        
+        if (compare_hash160_fast(hash160_batch[i], target)) {
+            if (atomicCAS((int*)&g_found, 0, 1) == 0) {
+                // The actual private key for this index
+                char found_hex[65];
+                bigint_to_hex(&key_for_check, found_hex);
+                hash160_to_hex(hash160_batch[i], g_found_hash160);
+                memcpy(g_found_hex, found_hex, 65);
+                return;
+            }
+        }
+        
+        // Update key for next iteration
+        if (i < BATCH_SIZE - 1) {
+            BigInt next_key;
+            add_with_wraparound(&next_key, &key_for_check, &d_step_size);
+            if (compare_bigint(&next_key, &const_n) >= 0) {
+                ptx_u256Sub(&next_key, &next_key, &const_n);
+            }
+            key_for_check = next_key;
+        }
+    }
+    
+    // --- Update this thread's key for next iteration: priv_base + (BATCH_SIZE * step_size) ---
+    BigInt total_offset;
+    
+    // Calculate total_offset = BATCH_SIZE * step_size
+    init_bigint(&total_offset, 0);
+    for (int i = 0; i < BATCH_SIZE; ++i) {
+        BigInt temp;
+        ptx_u256Add(&temp, &total_offset, &d_step_size);
+        if (compare_bigint(&temp, &const_n) >= 0) {
+            ptx_u256Sub(&temp, &temp, &const_n);
+        }
+        total_offset = temp;
+    }
+    
+    BigInt next_key;
+    add_with_wraparound(&next_key, &priv_base, &total_offset);
+    
+    // Reduce modulo n if needed
+    if (compare_bigint(&next_key, &const_n) >= 0) {
+        ptx_u256Sub(&next_key, &next_key, &const_n);
+    }
+    
+    // Store updated key back to global memory
+    d_thread_keys[tid] = next_key;
 }
 
-bool run_with_quantum_data(const char* min, const char* max, const char* target, int blocks, int threads, int device_id) {
+bool run_with_quantum_data(const char* min, const char* max, const char* target, 
+                           uint64_t step_size, int blocks, int threads, int device_id) {
     uint8_t shared_target[20];
     hex_string_to_bytes(target, shared_target, 20);
     uint8_t *d_target;
@@ -273,111 +282,223 @@ bool run_with_quantum_data(const char* min, const char* max, const char* target,
     cudaMemcpyToSymbol(d_min_bigint, &min_bigint, sizeof(BigInt));
     cudaMemcpyToSymbol(d_max_bigint, &max_bigint, sizeof(BigInt));
     
+    // Calculate range size: max - min + 1
+    BigInt range_size;
+    bool borrow = false;
+    for (int i = 0; i < BIGINT_WORDS; ++i) {
+        uint64_t diff = (uint64_t)max_bigint.data[i] - (uint64_t)min_bigint.data[i] - (borrow ? 1 : 0);
+        range_size.data[i] = (uint32_t)diff;
+        borrow = (diff > 0xFFFFFFFFULL);
+    }
+    // Add 1 to get inclusive range (host-compatible addition)
+    bool carry = true; // Adding 1
+    for (int i = 0; i < BIGINT_WORDS && carry; ++i) {
+        uint64_t sum = (uint64_t)range_size.data[i] + 1;
+        range_size.data[i] = (uint32_t)sum;
+        carry = (sum > 0xFFFFFFFFULL);
+    }
+    
+    cudaMemcpyToSymbol(d_range_size, &range_size, sizeof(BigInt));
+    
+    // Convert step_size to BigInt and copy to device
+    BigInt step_bigint;
+    init_bigint(&step_bigint, step_size);
+    cudaMemcpyToSymbol(d_step_size, &step_bigint, sizeof(BigInt));
+    
     int total_threads = blocks * threads;
     int found_flag;
     
     // Calculate keys processed per kernel launch
-    uint64_t keys_per_kernel = (uint64_t)blocks * threads * BATCH_SIZE;
+    uint64_t keys_per_kernel = (uint64_t)total_threads * BATCH_SIZE * step_size;
     
-    printf("Searching in range:\n");
+    printf("Searching in range (with wrap-around enabled):\n");
     printf("Min: %s\n", min);
     printf("Max: %s\n", max);
     printf("Target: %s\n", target);
+    printf("Step size: %llu\n", (unsigned long long)step_size);
     printf("Blocks: %d, Threads: %d, Batch size: %d\n", blocks, threads, BATCH_SIZE);
     printf("Total threads: %d\n", total_threads);
-    printf("Keys per kernel: %llu\n\n", (unsigned long long)keys_per_kernel);
+    printf("Keys per kernel: %llu (each thread checks %d keys with step +%llu)\n", 
+           (unsigned long long)keys_per_kernel, BATCH_SIZE, (unsigned long long)step_size);
+    printf("Note: When reaching max, keys wrap around to min automatically\n\n");
     
-    uint64_t p1;
-    uint64_t p2;
-    uint64_t p3;
+    // Allocate device memory for per-thread persistent keys
+    BigInt* d_thread_keys_ptr;
+    cudaMalloc(&d_thread_keys_ptr, total_threads * sizeof(BigInt));
+    cudaMemcpyToSymbol(d_thread_keys, &d_thread_keys_ptr, sizeof(BigInt*));
+    
+    // Pre-calculate range
+    BigInt range;
+    borrow = false;
+    for (int i = 0; i < BIGINT_WORDS; ++i) {
+        uint64_t diff = (uint64_t)max_bigint.data[i] - (uint64_t)min_bigint.data[i] - (borrow ? 1 : 0);
+        range.data[i] = (uint32_t)diff;
+        borrow = (diff > 0xFFFFFFFFULL);
+    }
+    
+    // Find highest non-zero word and create mask
+    int highest_word = BIGINT_WORDS - 1;
+    while (highest_word >= 0 && range.data[highest_word] == 0) {
+        highest_word--;
+    }
+    
+    uint32_t mask = 0xFFFFFFFF;
+    if (highest_word >= 0) {
+        mask = range.data[highest_word];
+        mask |= mask >> 1;
+        mask |= mask >> 2;
+        mask |= mask >> 4;
+        mask |= mask >> 8;
+        mask |= mask >> 16;
+    }
+    
+    // Initialize random starting points for each thread
+    std::vector<BigInt> thread_keys(total_threads);
+    uint64_t seed;
+    BCryptGenRandom(NULL, (PUCHAR)&seed, sizeof(seed), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    std::knuth_b gen(seed);
+    std::uniform_int_distribution<uint32_t> dis(0, 0xFFFFFFFF);
+    
+    printf("Initializing %d random starting points for threads...\n", total_threads);
+    
+    for (int tid = 0; tid < total_threads; ++tid) {
+        BigInt random_val;
+        
+        // Generate random value in [0, range]
+        for (int i = 0; i < BIGINT_WORDS; ++i) {
+            random_val.data[i] = dis(gen);
+        }
+        
+        // Apply mask to fit within range
+        if (highest_word >= 0) {
+            random_val.data[highest_word] &= mask;
+            for (int i = highest_word + 1; i < BIGINT_WORDS; ++i) {
+                random_val.data[i] = 0;
+            }
+        }
+        
+        // thread_keys[tid] = random_val + min
+        bool carry = false;
+        for (int i = 0; i < BIGINT_WORDS; ++i) {
+            uint64_t sum = (uint64_t)random_val.data[i] + (uint64_t)min_bigint.data[i] + (carry ? 1 : 0);
+            thread_keys[tid].data[i] = (uint32_t)sum;
+            carry = (sum > 0xFFFFFFFFULL);
+        }
+    }
+    
+    // Copy initialized keys to device
+    cudaMemcpy(d_thread_keys_ptr, thread_keys.data(), total_threads * sizeof(BigInt), cudaMemcpyHostToDevice);
+    
+    printf("Starting persistent walking search with wrap-around (step size %llu)...\n\n", (unsigned long long)step_size);
+    
     // Performance tracking variables
     uint64_t total_keys_checked = 0;
     auto start_time = std::chrono::high_resolution_clock::now();
-    auto last_print_time = start_time;
-	BCryptGenRandom(NULL, (PUCHAR)&p1, sizeof(p1), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
-	BCryptGenRandom(NULL, (PUCHAR)&p2, sizeof(p2), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
-	BCryptGenRandom(NULL, (PUCHAR)&p3, sizeof(p3), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    auto last_report_time = start_time;
+    uint64_t iteration = 0;
+    
+    // Create CUDA stream for async operations
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+    
     while(true) {
-        auto kernel_start = std::chrono::high_resolution_clock::now();
+        // Launch kernel with stream
+        start<<<blocks, threads, 0, stream>>>(d_target, iteration);
         
-        // Launch kernel
-        start<<<blocks, threads>>>(d_target, p1, p2, p3, total_threads);
-        cudaDeviceSynchronize();
-        
-        auto kernel_end = std::chrono::high_resolution_clock::now();
-        
-        // Calculate kernel execution time
-        double kernel_time = std::chrono::duration<double>(kernel_end - kernel_start).count();
-        
-        // Update counters
-        total_keys_checked += keys_per_kernel;
-        
-        // Print performance stats every second
-        auto current_time = std::chrono::high_resolution_clock::now();
-        double elapsed_since_print = std::chrono::duration<double>(current_time - last_print_time).count();
-        
-        if (elapsed_since_print >= 1.0) {
-            double current_kps = keys_per_kernel / kernel_time;
+        // Asynchronous check - only sync when needed
+        cudaError_t err = cudaStreamQuery(stream);
+        if (err == cudaSuccess) {
+            // Update counters
+            total_keys_checked += keys_per_kernel;
+            iteration++;
             
-            printf("\rSpeed: %.2f MK/s | Total: %.2f B keys",
-                   current_kps / 1000000.0,
-                   total_keys_checked / 1000000000.0);
-            fflush(stdout);
-            
-            last_print_time = current_time;
-        }
-        
-        // Check if key was found
-        cudaMemcpyFromSymbol(&found_flag, g_found, sizeof(int));
-        if (found_flag) {
-            printf("\n\n");
-            
-            char found_hex[65], found_hash160[41];
-            cudaMemcpyFromSymbol(found_hex, g_found_hex, 65);
-            cudaMemcpyFromSymbol(found_hash160, g_found_hash160, 41);
-            
-            double total_time = std::chrono::duration<double>(
-                std::chrono::high_resolution_clock::now() - start_time
-            ).count();
-            
-            printf("FOUND!\n");
-            printf("Private Key: %s\n", found_hex);
-            printf("Hash160: %s\n", found_hash160);
-            printf("Total time: %.2f seconds\n", total_time);
-            printf("Total keys checked: %llu (%.2f billion)\n", 
-                   (unsigned long long)total_keys_checked,
-                   total_keys_checked / 1000000000.0);
-            printf("Average speed: %.2f MK/s\n", total_keys_checked / total_time / 1000000.0);
-            
-            std::ofstream outfile("result.txt", std::ios::app);
-            if (outfile.is_open()) {
-                std::time_t now = std::time(nullptr);
-                char timestamp[100];
-                std::strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
-                outfile << "[" << timestamp << "] Found: " << found_hex << " -> " << found_hash160 << std::endl;
-                outfile << "Total keys checked: " << total_keys_checked << std::endl;
-                outfile << "Time taken: " << total_time << " seconds" << std::endl;
-                outfile << "Average speed: " << (total_keys_checked / total_time / 1000000.0) << " MK/s" << std::endl;
-                outfile << std::endl;
-                outfile.close();
-                std::cout << "Result appended to result.txt" << std::endl;
+            // Check if found
+            cudaMemcpyFromSymbol(&found_flag, g_found, sizeof(int));
+            if (found_flag) {
+                cudaStreamSynchronize(stream);
+                printf("\n\n");
+                
+                char found_hex[65], found_hash160[41];
+                cudaMemcpyFromSymbol(found_hex, g_found_hex, 65);
+                cudaMemcpyFromSymbol(found_hash160, g_found_hash160, 41);
+                
+                double total_time = std::chrono::duration<double>(
+                    std::chrono::high_resolution_clock::now() - start_time
+                ).count();
+                
+                printf("FOUND!\n");
+                printf("Private Key: %s\n", found_hex);
+                printf("Hash160: %s\n", found_hash160);
+                printf("Step size: %llu\n", (unsigned long long)step_size);
+                printf("Iterations: %llu\n", iteration);
+                printf("Total time: %.2f seconds\n", total_time);
+                printf("Total keys checked: %llu (%.2f million)\n", 
+                       (unsigned long long)total_keys_checked,
+                       total_keys_checked / 1000000.0);
+                printf("Average speed: %.2f MK/s\n", total_keys_checked / total_time / 1000000.0);
+                
+                std::ofstream outfile("result.txt", std::ios::app);
+                if (outfile.is_open()) {
+                    std::time_t now = std::time(nullptr);
+                    char timestamp[100];
+                    std::strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+                    outfile << "[" << timestamp << "] Found: " << found_hex << " -> " << found_hash160 << std::endl;
+                    outfile << "Step size: " << step_size << std::endl;
+                    outfile << "Iterations: " << iteration << std::endl;
+                    outfile << "Total keys checked: " << total_keys_checked << std::endl;
+                    outfile << "Time taken: " << total_time << " seconds" << std::endl;
+                    outfile << "Average speed: " << (total_keys_checked / total_time / 1000000.0) << " MK/s" << std::endl;
+                    outfile << std::endl;
+                    outfile.close();
+                    std::cout << "Result appended to result.txt" << std::endl;
+                }
+                
+                cudaStreamDestroy(stream);
+                cudaFree(d_thread_keys_ptr);
+                cudaFree(d_target);
+                return true;
             }
             
-            cudaFree(d_target);
-            return true;
+            // Progress report every 10 seconds
+            auto now = std::chrono::high_resolution_clock::now();
+            double elapsed_since_report = std::chrono::duration<double>(now - last_report_time).count();
+            if (elapsed_since_report >= 10.0) {
+                double total_time = std::chrono::duration<double>(now - start_time).count();
+                double speed = total_keys_checked / total_time / 1000000.0;
+                printf("Progress: %llu iterations, %.2f MK checked (step: %llu), %.2f MK/s\n", 
+                       iteration, total_keys_checked / 1000000.0, (unsigned long long)step_size, speed);
+                last_report_time = now;
+            }
+        } else if (err != cudaErrorNotReady) {
+            // Handle actual errors
+            printf("CUDA Error: %s\n", cudaGetErrorString(err));
+            cudaStreamSynchronize(stream);
         }
-        p1 += 1;
     }
+    
+    cudaStreamDestroy(stream);
+    cudaFree(d_thread_keys_ptr);
+    cudaFree(d_target);
+    return false;
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 4) {
-        std::cerr << "Usage: " << argv[0] << " <min> <max> <target> [device_id]" << std::endl;
+    if (argc < 5) {
+        std::cerr << "Usage: " << argv[0] << " <min> <max> <target> <step_size> [device_id]" << std::endl;
+        std::cerr << "Example: " << argv[0] << " 8000000000000000 ffffffffffffffff <target_hash> 10" << std::endl;
+        std::cerr << "  step_size: increment between checked keys (1=sequential, 10=skip 9, etc.)" << std::endl;
+        std::cerr << "  Note: Keys automatically wrap from max to min" << std::endl;
         return 1;
     }
-    int blocks = 4096;
+    int blocks = 256;
     int threads = 256;
-    int device_id = (argc > 4) ? std::stoi(argv[4]) : 0;
+    uint64_t step_size = std::stoull(argv[4]);
+    int device_id = (argc > 5) ? std::stoi(argv[5]) : 0;
+    
+    if (step_size == 0) {
+        std::cerr << "Error: step_size must be greater than 0" << std::endl;
+        return 1;
+    }
     
     // Set GPU device
     cudaSetDevice(device_id);
@@ -394,7 +515,7 @@ int main(int argc, char* argv[]) {
     }
     init_gpu_constants();
     cudaDeviceSynchronize();
-    bool result = run_with_quantum_data(argv[1], argv[2], argv[3], blocks, threads, device_id);
+    bool result = run_with_quantum_data(argv[1], argv[2], argv[3], step_size, blocks, threads, device_id);
     
     return 0;
 }
